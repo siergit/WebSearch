@@ -40,16 +40,37 @@ SYSTEM_CHROMIUM_CANDIDATES = (
     "/snap/bin/chromium",
 )
 
+# Search patterns for Playwright browsers that may already be pre-installed in
+# the sandbox (this is how Claude's remote routines ship Chromium).
+PW_BROWSER_GLOBS = (
+    "/opt/pw-browsers/chromium-*/chrome-linux/chrome",
+    "/opt/pw-browsers/chromium_headless_shell-*/chrome-linux/headless_shell",
+    "/root/.cache/ms-playwright/chromium-*/chrome-linux/chrome",
+    "/root/.cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell",
+    str(Path.home() / ".cache/ms-playwright/chromium-*/chrome-linux/chrome"),
+)
+
 
 def _resolve_chromium_path() -> str | None:
     """Return a usable Chromium executable, or None to let Playwright decide."""
+    import glob
+
     explicit = os.environ.get("CHROMIUM_EXECUTABLE_PATH")
     if explicit:
         return explicit if Path(explicit).exists() else None
+
     for candidate in SYSTEM_CHROMIUM_CANDIDATES:
         if Path(candidate).exists():
             return candidate
-    return None
+
+    # Highest version wins (lexicographic sort is fine for chromium-<int>).
+    best: str | None = None
+    for pattern in PW_BROWSER_GLOBS:
+        matches = sorted(glob.glob(pattern))
+        if matches:
+            best = matches[-1]
+            break
+    return best
 
 DEFAULT_URL = (
     "https://www.searates.com/container/tracking/"

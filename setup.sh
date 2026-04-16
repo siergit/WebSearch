@@ -50,5 +50,16 @@ for path in /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome /
   fi
 done
 
-echo "ERROR: no Chromium available. Set CHROMIUM_EXECUTABLE_PATH manually." >&2
-exit 1
+# Some sandboxes ship a pre-populated Playwright cache. Use it if present.
+for path in /opt/pw-browsers/chromium-*/chrome-linux/chrome \
+            /opt/pw-browsers/chromium_headless_shell-*/chrome-linux/headless_shell \
+            /root/.cache/ms-playwright/chromium-*/chrome-linux/chrome \
+            "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux/chrome; do
+  if [ -x "$path" ]; then
+    echo "Playwright-bundled Chromium available at $path"
+    exit 0
+  fi
+done
+
+echo "WARN: no Chromium found yet. track_and_email.py will retry detection at runtime." >&2
+exit 0

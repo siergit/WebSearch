@@ -65,8 +65,15 @@ Ordem de tentativas:
    primeiro porque o sandbox da routine normalmente permite HTTPS mas
    bloqueia portas SMTP. API key default embutida; sobreponível com
    `RESEND_API_KEY`. Sender default `onboarding@resend.dev`
-   (sobreponível com `RESEND_FROM`) porque o domínio ainda não está
-   verificado no Resend.
+   (sobreponível com `RESEND_FROM`).
+   **IMPORTANTE:** enquanto o domínio não for verificado no Resend, o
+   free tier só aceita entregar aos emails da conta do dono. Sintoma:
+   `HTTP 403 "host not in allowlist"`. Para enviar a
+   `miguel.reis@sier.pt` é preciso:
+   - verificar um domínio (`sier.pt` ou `enginis.net`) na dashboard do
+     Resend e apontar os DNS records, e depois
+   - definir `RESEND_FROM=noreply@<dominio-verificado>`.
+   Sem isto, o caminho Resend falha e só SMTP pode entregar.
 2. **SMTP** (`mail.enginis.net:465` SSL por default) como fallback. Se
    falhar, tenta `465/SSL`, `587/STARTTLS`, `2525`, `25` em sequência
    com timeout de 20s cada.

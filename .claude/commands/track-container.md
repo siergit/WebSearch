@@ -5,18 +5,18 @@ allowed-tools: Bash(bash setup.sh), Bash(python3 track_and_email.py)
 
 Run the container tracking job.
 
-1. Run `bash setup.sh`. If it exits non-zero because the Playwright CDN is
-   blocked, that is fine as long as a system Chromium is available (setup.sh
-   tries `apt-get install chromium`). Check `/usr/bin/chromium` or
-   `/usr/bin/chromium-browser`; if present, continue.
-2. Run `python3 track_and_email.py`. The script auto-detects the system
-   Chromium binary, so no extra flags are needed.
-3. If Chromium is still missing, install it with
-   `sudo apt-get install -y chromium || sudo apt-get install -y chromium-browser`
-   and retry step 2. As a last resort, set `CHROMIUM_EXECUTABLE_PATH` to any
-   chrome/chromium binary on the system.
-4. Report the exit status of step 2, the recipient, and any errors from
-   stderr.
+1. Run `bash setup.sh`. Don't treat Playwright CDN download failures as
+   fatal — the script already falls back to system packages and to any
+   pre-bundled Chromium under `/opt/pw-browsers/` or
+   `~/.cache/ms-playwright/`.
+2. Run `python3 track_and_email.py`. It auto-detects Chromium in:
+   `/usr/bin/chromium{,-browser}`, `/usr/bin/google-chrome{,-stable}`,
+   `/snap/bin/chromium`, `/opt/pw-browsers/chromium-*/chrome-linux/chrome`,
+   `~/.cache/ms-playwright/chromium-*/chrome-linux/chrome`.
+3. If Chromium cannot be located, try `ls /opt/pw-browsers /root/.cache/ms-playwright 2>/dev/null` to find one and re-run with
+   `CHROMIUM_EXECUTABLE_PATH=<path> python3 track_and_email.py`.
+4. Report: exit code of step 2, recipient, and whether email went via Resend
+   or SMTP (or the stderr error chain).
 
 The script reads SMTP credentials from environment variables
 (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, optional `SMTP_PORT`, `SMTP_FROM`,
