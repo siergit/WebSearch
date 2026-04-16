@@ -29,6 +29,25 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout, sync_playwright
 
+SYSTEM_CHROMIUM_CANDIDATES = (
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/snap/bin/chromium",
+)
+
+
+def _resolve_chromium_path() -> str | None:
+    """Return a usable Chromium executable, or None to let Playwright decide."""
+    explicit = os.environ.get("CHROMIUM_EXECUTABLE_PATH")
+    if explicit:
+        return explicit if Path(explicit).exists() else None
+    for candidate in SYSTEM_CHROMIUM_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
 DEFAULT_URL = (
     "https://www.searates.com/container/tracking/"
     "?shipment-type=sea&number=COSU6448851830&type=BL&sealine=COSU"
@@ -72,8 +91,23 @@ def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
     screenshot_path = artifacts_dir / "tracking.png"
     html_path = artifacts_dir / "tracking.html"
 
+    launch_kwargs = {"headless": True, "args": ["--no-sandbox"]}
+    chromium_path = _resolve_chromium_path()
+    if chromium_path:
+        launch_kwargs["executable_path"] = chromium_path
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        try:
+            browser = p.chromium.launch(**launch_kwargs)
+        except Exception as exc:
+            if "executable_path" in launch_kwargs:
+                raise
+            # Playwright bundled browser missing and no system Chromium found.
+            raise RuntimeError(
+                "No Chromium available. Run setup.sh or set "
+                "CHROMIUM_EXECUTABLE_PATH to a chromium/chrome binary. "
+                f"Original error: {exc}"
+            ) from exc
         context = browser.new_context(
             viewport={"width": 1440, "height": 900},
             user_agent=(

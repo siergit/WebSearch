@@ -44,6 +44,18 @@ Os valores podem ser sobrepostos via env vars: `TRACKING_URL`,
 - `.claude/commands/track-container.md` — slash command `/track-container`
 - `.claude/settings.json` — hook `SessionStart` corre `setup.sh`
 
+## Chromium / fallback
+
+Se o download do Chromium pela Playwright falhar (CDN bloqueada na
+sandbox), `setup.sh` tenta `apt-get install -y chromium` /
+`chromium-browser`, depois `dnf` e `apk`. O script Python procura
+automaticamente em `/usr/bin/chromium`, `/usr/bin/chromium-browser`,
+`/usr/bin/google-chrome`, `/usr/bin/google-chrome-stable` e `/snap/bin/chromium`,
+e pode ser forçado com `CHROMIUM_EXECUTABLE_PATH=/caminho/para/chrome`.
+
+Se ambos falharem: instale manualmente o pacote chromium do SO e volte
+a correr o comando.
+
 ## Desenvolvimento
 
 - Branch principal: `claude/container-tracking-email-app-WmDLG` (usada
