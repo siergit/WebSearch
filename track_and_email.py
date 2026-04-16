@@ -17,11 +17,14 @@ Env vars (all optional, overriding the defaults below):
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import smtplib
 import ssl
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -60,7 +63,15 @@ DEFAULT_SMTP_USER = "noreply@enginis.net"
 DEFAULT_SMTP_PASSWORD = "vvs-mSp88eosg1m("
 DEFAULT_SMTP_USE_SSL = "1"
 
-ARTIFACTS_DIR = Path(os.environ.get("TRACKING_ARTIFACTS_DIR", "/tmp/container-tracking"))
+# Resend is used first because sandbox environments for the remote routine
+# typically allow outbound HTTPS but block SMTP ports.
+RESEND_API_URL = "https://api.resend.com/emails"
+DEFAULT_RESEND_API_KEY = "re_BvJDcSK2_5brAEpVKx4vboFwzVfACXr7t"
+DEFAULT_RESEND_FROM = "Container Tracking <onboarding@resend.dev>"
+
+ARTIFACTS_BASE_DIR = Path(os.environ.get("TRACKING_ARTIFACTS_DIR", "/tmp/container-tracking"))
+RUN_TIMESTAMP = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+ARTIFACTS_DIR = ARTIFACTS_BASE_DIR / RUN_TIMESTAMP
 
 
 def _dismiss_overlays(page) -> None:
@@ -158,12 +169,8 @@ def _container_number(url: str) -> str:
     return (qs.get("number") or ["unknown"])[0]
 
 
-def build_email(
-    data: dict,
-    recipient: str,
-    sender: str,
-    source_url: str,
-) -> EmailMessage:
+def _email_parts(data: dict, source_url: str) -> dict:
+    """Shared subject/text/html/attachments used by both SMTP and Resend paths."""
     container = _container_number(source_url)
     captured_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -197,45 +204,97 @@ def build_email(
 </html>
 """
 
-    msg = EmailMessage()
-    msg["Subject"] = f"Container tracking {container} - {captured_at}"
-    msg["From"] = sender
-    msg["To"] = recipient
-    msg.set_content(plain)
-    msg.add_alternative(html, subtype="html")
-
-    screenshot = Path(data["screenshot"])
-    with screenshot.open("rb") as f:
-        msg.add_attachment(
-            f.read(),
-            maintype="image",
-            subtype="png",
-            filename=screenshot.name,
-        )
-
-    html_file = Path(data["html"])
-    with html_file.open("rb") as f:
-        msg.add_attachment(
-            f.read(),
-            maintype="text",
-            subtype="html",
-            filename=html_file.name,
-        )
-
     metadata = {
         "container": container,
         "source_url": source_url,
         "captured_at": captured_at,
         "page_title": data["title"],
     }
-    msg.add_attachment(
-        json.dumps(metadata, indent=2).encode("utf-8"),
-        maintype="application",
-        subtype="json",
-        filename="metadata.json",
-    )
 
+    attachments: list[dict] = []
+    for path in (Path(data["screenshot"]), Path(data["html"])):
+        attachments.append({
+            "filename": path.name,
+            "bytes": path.read_bytes(),
+        })
+    attachments.append({
+        "filename": "metadata.json",
+        "bytes": json.dumps(metadata, indent=2).encode("utf-8"),
+    })
+
+    return {
+        "subject": f"Container tracking {container} - {captured_at}",
+        "text": plain,
+        "html": html,
+        "attachments": attachments,
+    }
+
+
+def build_email(
+    data: dict,
+    recipient: str,
+    sender: str,
+    source_url: str,
+) -> EmailMessage:
+    parts = _email_parts(data, source_url)
+    msg = EmailMessage()
+    msg["Subject"] = parts["subject"]
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg.set_content(parts["text"])
+    msg.add_alternative(parts["html"], subtype="html")
+    for att in parts["attachments"]:
+        filename = att["filename"]
+        if filename.endswith(".png"):
+            maintype, subtype = "image", "png"
+        elif filename.endswith(".html"):
+            maintype, subtype = "text", "html"
+        elif filename.endswith(".json"):
+            maintype, subtype = "application", "json"
+        else:
+            maintype, subtype = "application", "octet-stream"
+        msg.add_attachment(att["bytes"], maintype=maintype, subtype=subtype, filename=filename)
     return msg
+
+
+def send_via_resend(data: dict, recipient: str, source_url: str) -> None:
+    api_key = os.environ.get("RESEND_API_KEY", DEFAULT_RESEND_API_KEY)
+    if not api_key:
+        raise RuntimeError("RESEND_API_KEY not set")
+    sender = os.environ.get("RESEND_FROM", DEFAULT_RESEND_FROM)
+
+    parts = _email_parts(data, source_url)
+    payload = {
+        "from": sender,
+        "to": [recipient],
+        "subject": parts["subject"],
+        "text": parts["text"],
+        "html": parts["html"],
+        "attachments": [
+            {
+                "filename": att["filename"],
+                "content": base64.b64encode(att["bytes"]).decode("ascii"),
+            }
+            for att in parts["attachments"]
+        ],
+    }
+
+    req = urllib.request.Request(
+        RESEND_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            print(f"Resend response {resp.status}: {body}", file=sys.stderr)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Resend HTTP {exc.code}: {detail}") from exc
 
 
 def _smtp_attempts() -> list[tuple[int, bool]]:
@@ -312,20 +371,35 @@ def main() -> int:
     data = scrape_tracking(url, ARTIFACTS_DIR)
     print(f"Screenshot saved to {data['screenshot']}")
 
-    msg = build_email(data, recipient=recipient, sender=sender, source_url=url)
+    errors: list[str] = []
+
+    if os.environ.get("RESEND_API_KEY", DEFAULT_RESEND_API_KEY):
+        try:
+            print("Sending via Resend HTTPS", file=sys.stderr)
+            send_via_resend(data, recipient=recipient, source_url=url)
+            print(f"Email sent to {recipient} via Resend")
+            return 0
+        except Exception as exc:
+            errors.append(f"Resend: {exc}")
+            print(f"Resend send failed: {exc}", file=sys.stderr)
+
     try:
+        print("Falling back to SMTP", file=sys.stderr)
+        msg = build_email(data, recipient=recipient, sender=sender, source_url=url)
         send_email(msg)
+        print(f"Email sent to {recipient} via SMTP")
+        return 0
     except Exception as exc:
-        print(f"Email send failed: {exc}", file=sys.stderr)
-        print(
-            "Artifacts retained at:\n"
-            f"  {data['screenshot']}\n"
-            f"  {data['html']}",
-            file=sys.stderr,
-        )
-        return 1
-    print(f"Email sent to {recipient}")
-    return 0
+        errors.append(f"SMTP: {exc}")
+        print(f"SMTP send failed: {exc}", file=sys.stderr)
+
+    print(
+        "All email paths failed.\n"
+        + "\n".join(errors)
+        + f"\nArtifacts retained at:\n  {data['screenshot']}\n  {data['html']}",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":

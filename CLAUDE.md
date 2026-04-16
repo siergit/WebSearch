@@ -57,17 +57,30 @@ forçado com `CHROMIUM_EXECUTABLE_PATH=/caminho/para/chrome`.
 Se ambos falharem: instale manualmente o pacote chromium do SO e volte
 a correr o comando.
 
-## SMTP / envio
+## Envio de email
 
-`send_email` tenta o `SMTP_PORT` configurado primeiro e depois faz fallback
-para `465 SSL`, `587 STARTTLS`, `2525` e `25`. Cada tentativa tem timeout de
-20s e escreve o resultado em stderr.
+Ordem de tentativas:
 
-Se TODAS as tentativas SMTP falharem (sandbox a bloquear portas de saída),
-o script sai com código 1 mas mantém os artefactos em
-`/tmp/container-tracking/` (`tracking.png`, `tracking.html`). Nesse caso,
-reporte os caminhos ao utilizador — ele pode pedir um relay HTTP
-(Resend/Mailgun) ou outro SMTP reachable.
+1. **Resend** (HTTPS POST para `https://api.resend.com/emails`) — usado
+   primeiro porque o sandbox da routine normalmente permite HTTPS mas
+   bloqueia portas SMTP. API key default embutida; sobreponível com
+   `RESEND_API_KEY`. Sender default `onboarding@resend.dev`
+   (sobreponível com `RESEND_FROM`) porque o domínio ainda não está
+   verificado no Resend.
+2. **SMTP** (`mail.enginis.net:465` SSL por default) como fallback. Se
+   falhar, tenta `465/SSL`, `587/STARTTLS`, `2525`, `25` em sequência
+   com timeout de 20s cada.
+
+Se TODOS os caminhos falharem, o script sai com código 1 mas mantém os
+artefactos. Reporte os caminhos ao utilizador.
+
+## Artefactos
+
+Cada corrida grava os ficheiros num subdirectório novo em
+`/tmp/container-tracking/YYYYMMDD_HHMM/` (UTC) — `tracking.png`,
+`tracking.html`. O directório base é sobreponível com
+`TRACKING_ARTIFACTS_DIR`. Directórios antigos nunca são apagados
+automaticamente.
 
 ## Desenvolvimento
 
