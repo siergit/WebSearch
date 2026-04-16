@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 """Scrape SeaRates container tracking and email the result.
 
-Designed to be invoked from a Claude Code routine (remote mode). Reads SMTP
-credentials and runtime options from environment variables so nothing secret
-lives in the repository.
+Designed to be invoked from a Claude Code routine (remote mode). Defaults are
+wired to the Enginis SMTP relay; every value can be overridden via env vars.
 
-Required env vars:
+Env vars (all optional, overriding the defaults below):
     SMTP_HOST          SMTP server hostname
+    SMTP_PORT          SMTP port
     SMTP_USER          SMTP username
-    SMTP_PASSWORD      SMTP password / app password
-
-Optional env vars:
-    SMTP_PORT          default 587
-    SMTP_FROM          default = SMTP_USER
-    SMTP_USE_SSL       "1" to use SMTPS (port 465). Otherwise STARTTLS.
+    SMTP_PASSWORD      SMTP password
+    SMTP_FROM          envelope sender (defaults to SMTP_USER)
+    SMTP_USE_SSL       "1" for SMTPS (port 465), "0" for STARTTLS
     TRACKING_URL       override the SeaRates URL
-    TRACKING_RECIPIENT override the recipient (default miguel.reis@sier.pt)
+    TRACKING_RECIPIENT override the recipient
 """
 
 from __future__ import annotations
@@ -37,6 +34,12 @@ DEFAULT_URL = (
     "?shipment-type=sea&number=COSU6448851830&type=BL&sealine=COSU"
 )
 DEFAULT_RECIPIENT = "miguel.reis@sier.pt"
+
+DEFAULT_SMTP_HOST = "mail.enginis.net"
+DEFAULT_SMTP_PORT = "465"
+DEFAULT_SMTP_USER = "noreply@enginis.net"
+DEFAULT_SMTP_PASSWORD = "vvs-mSp88eosg1m("
+DEFAULT_SMTP_USE_SSL = "1"
 
 ARTIFACTS_DIR = Path(os.environ.get("TRACKING_ARTIFACTS_DIR", "/tmp/container-tracking"))
 
@@ -202,11 +205,11 @@ def build_email(
 
 
 def send_email(msg: EmailMessage) -> None:
-    host = os.environ["SMTP_HOST"]
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    user = os.environ["SMTP_USER"]
-    password = os.environ["SMTP_PASSWORD"]
-    use_ssl = os.environ.get("SMTP_USE_SSL", "0") == "1"
+    host = os.environ.get("SMTP_HOST", DEFAULT_SMTP_HOST)
+    port = int(os.environ.get("SMTP_PORT", DEFAULT_SMTP_PORT))
+    user = os.environ.get("SMTP_USER", DEFAULT_SMTP_USER)
+    password = os.environ.get("SMTP_PASSWORD", DEFAULT_SMTP_PASSWORD)
+    use_ssl = os.environ.get("SMTP_USE_SSL", DEFAULT_SMTP_USE_SSL) == "1"
 
     if use_ssl:
         context = ssl.create_default_context()
@@ -225,12 +228,11 @@ def send_email(msg: EmailMessage) -> None:
 def main() -> int:
     url = os.environ.get("TRACKING_URL", DEFAULT_URL)
     recipient = os.environ.get("TRACKING_RECIPIENT", DEFAULT_RECIPIENT)
-    sender = os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER")
-
-    missing = [v for v in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD") if not os.environ.get(v)]
-    if missing:
-        print(f"Missing required env vars: {', '.join(missing)}", file=sys.stderr)
-        return 2
+    sender = (
+        os.environ.get("SMTP_FROM")
+        or os.environ.get("SMTP_USER")
+        or DEFAULT_SMTP_USER
+    )
 
     print(f"Scraping {url}")
     data = scrape_tracking(url, ARTIFACTS_DIR)
