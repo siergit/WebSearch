@@ -238,25 +238,65 @@ def build_email(
     return msg
 
 
-def send_email(msg: EmailMessage) -> None:
-    host = os.environ.get("SMTP_HOST", DEFAULT_SMTP_HOST)
-    port = int(os.environ.get("SMTP_PORT", DEFAULT_SMTP_PORT))
-    user = os.environ.get("SMTP_USER", DEFAULT_SMTP_USER)
-    password = os.environ.get("SMTP_PASSWORD", DEFAULT_SMTP_PASSWORD)
-    use_ssl = os.environ.get("SMTP_USE_SSL", DEFAULT_SMTP_USE_SSL) == "1"
+def _smtp_attempts() -> list[tuple[int, bool]]:
+    """Ports + mode (use_ssl) to try, in order. First the configured one, then
+    fall back to the other standard submission ports so we survive sandboxes
+    that block one port but not another."""
+    env_port = int(os.environ.get("SMTP_PORT", DEFAULT_SMTP_PORT))
+    env_ssl = os.environ.get("SMTP_USE_SSL", DEFAULT_SMTP_USE_SSL) == "1"
+    preferred = (env_port, env_ssl)
+    fallbacks = [(465, True), (587, False), (2525, False), (25, False)]
+    seen = {preferred}
+    ordered = [preferred]
+    for attempt in fallbacks:
+        if attempt not in seen:
+            ordered.append(attempt)
+            seen.add(attempt)
+    return ordered
 
+
+def _send_via_smtp(msg: EmailMessage, host: str, port: int, use_ssl: bool,
+                   user: str, password: str, timeout: int = 20) -> None:
     if use_ssl:
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=context, timeout=60) as smtp:
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=timeout) as smtp:
             smtp.login(user, password)
             smtp.send_message(msg)
     else:
-        with smtplib.SMTP(host, port, timeout=60) as smtp:
+        with smtplib.SMTP(host, port, timeout=timeout) as smtp:
             smtp.ehlo()
-            smtp.starttls(context=ssl.create_default_context())
-            smtp.ehlo()
+            try:
+                smtp.starttls(context=ssl.create_default_context())
+                smtp.ehlo()
+            except smtplib.SMTPNotSupportedError:
+                pass
             smtp.login(user, password)
             smtp.send_message(msg)
+
+
+def send_email(msg: EmailMessage) -> None:
+    host = os.environ.get("SMTP_HOST", DEFAULT_SMTP_HOST)
+    user = os.environ.get("SMTP_USER", DEFAULT_SMTP_USER)
+    password = os.environ.get("SMTP_PASSWORD", DEFAULT_SMTP_PASSWORD)
+
+    errors: list[str] = []
+    for port, use_ssl in _smtp_attempts():
+        mode = "SSL" if use_ssl else "STARTTLS"
+        try:
+            print(f"SMTP attempt {host}:{port} ({mode})", file=sys.stderr)
+            _send_via_smtp(msg, host, port, use_ssl, user, password)
+            print(f"SMTP success via {host}:{port} ({mode})", file=sys.stderr)
+            return
+        except Exception as exc:
+            errors.append(f"{host}:{port} {mode} -> {exc.__class__.__name__}: {exc}")
+            continue
+
+    raise RuntimeError(
+        "All SMTP attempts failed. The routine sandbox likely blocks outbound "
+        "SMTP. Provide an HTTP email relay (e.g. Resend/Mailgun API) or "
+        "configure SMTP_HOST/SMTP_PORT to a reachable relay. Details:\n  "
+        + "\n  ".join(errors)
+    )
 
 
 def main() -> int:
@@ -273,7 +313,17 @@ def main() -> int:
     print(f"Screenshot saved to {data['screenshot']}")
 
     msg = build_email(data, recipient=recipient, sender=sender, source_url=url)
-    send_email(msg)
+    try:
+        send_email(msg)
+    except Exception as exc:
+        print(f"Email send failed: {exc}", file=sys.stderr)
+        print(
+            "Artifacts retained at:\n"
+            f"  {data['screenshot']}\n"
+            f"  {data['html']}",
+            file=sys.stderr,
+        )
+        return 1
     print(f"Email sent to {recipient}")
     return 0
 

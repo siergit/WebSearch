@@ -50,11 +50,24 @@ Se o download do Chromium pela Playwright falhar (CDN bloqueada na
 sandbox), `setup.sh` tenta `apt-get install -y chromium` /
 `chromium-browser`, depois `dnf` e `apk`. O script Python procura
 automaticamente em `/usr/bin/chromium`, `/usr/bin/chromium-browser`,
-`/usr/bin/google-chrome`, `/usr/bin/google-chrome-stable` e `/snap/bin/chromium`,
-e pode ser forçado com `CHROMIUM_EXECUTABLE_PATH=/caminho/para/chrome`.
+`/usr/bin/google-chrome`, `/usr/bin/google-chrome-stable`,
+`/snap/bin/chromium` e binários dentro de `/opt/pw-browsers/`, e pode ser
+forçado com `CHROMIUM_EXECUTABLE_PATH=/caminho/para/chrome`.
 
 Se ambos falharem: instale manualmente o pacote chromium do SO e volte
 a correr o comando.
+
+## SMTP / envio
+
+`send_email` tenta o `SMTP_PORT` configurado primeiro e depois faz fallback
+para `465 SSL`, `587 STARTTLS`, `2525` e `25`. Cada tentativa tem timeout de
+20s e escreve o resultado em stderr.
+
+Se TODAS as tentativas SMTP falharem (sandbox a bloquear portas de saída),
+o script sai com código 1 mas mantém os artefactos em
+`/tmp/container-tracking/` (`tracking.png`, `tracking.html`). Nesse caso,
+reporte os caminhos ao utilizador — ele pode pedir um relay HTTP
+(Resend/Mailgun) ou outro SMTP reachable.
 
 ## Desenvolvimento
 
