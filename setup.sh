@@ -1,65 +1,61 @@
 #!/usr/bin/env bash
-# Installs Python dependencies and a Chromium browser for Playwright.
-# Order of preference for Chromium:
-#   1. Playwright-managed Chromium (downloaded from playwright CDN)
-#   2. System Chromium (apt install chromium / chromium-browser)
-#   3. Whatever already exists at /usr/bin/chromium*, google-chrome*
-# The Python script auto-detects any of these via CHROMIUM_EXECUTABLE_PATH
-# or the common system paths.
+# Fast, idempotent bootstrap. Designed to not eat the routine's time budget.
+# Skips pip install if playwright is already importable and skips the
+# playwright CDN download if a Chromium binary is already on disk.
 set -u
 set -o pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-python3 -m pip install --upgrade pip >/dev/null 2>&1 || true
-python3 -m pip install -r "$DIR/requirements.txt"
+have_chromium() {
+  for path in /usr/bin/chromium /usr/bin/chromium-browser \
+              /usr/bin/google-chrome /usr/bin/google-chrome-stable \
+              /snap/bin/chromium \
+              /opt/pw-browsers/chromium-*/chrome-linux/chrome \
+              /opt/pw-browsers/chromium_headless_shell-*/chrome-linux/headless_shell \
+              /root/.cache/ms-playwright/chromium-*/chrome-linux/chrome \
+              "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux/chrome; do
+    if [ -x "$path" ]; then
+      echo "Chromium available at $path"
+      return 0
+    fi
+  done
+  return 1
+}
 
-echo "Attempting Playwright Chromium download..."
-if python3 -m playwright install chromium 2>&1; then
+if python3 -c "import playwright" 2>/dev/null; then
+  echo "playwright already installed; skipping pip install."
+else
+  echo "Installing python deps..."
+  python3 -m pip install --no-input --disable-pip-version-check \
+    -r "$DIR/requirements.txt"
+fi
+
+if have_chromium; then
+  exit 0
+fi
+
+echo "No Chromium on disk; trying playwright CDN..."
+if timeout 90 python3 -m playwright install chromium 2>&1; then
   echo "Playwright Chromium installed."
   exit 0
 fi
 
-echo "Playwright download failed; falling back to system Chromium."
+echo "Playwright CDN failed; trying system packages..."
+if command -v apt-get >/dev/null 2>&1; then
+  for pkg in chromium chromium-browser; do
+    if timeout 90 apt-get install -y --no-install-recommends "$pkg" >/dev/null 2>&1; then
+      echo "Installed $pkg via apt."
+      exit 0
+    fi
+  done
+fi
+if command -v dnf >/dev/null 2>&1; then
+  timeout 90 dnf install -y chromium >/dev/null 2>&1 && exit 0
+fi
+if command -v apk >/dev/null 2>&1; then
+  timeout 90 apk add --no-cache chromium >/dev/null 2>&1 && exit 0
+fi
 
-install_system_chromium() {
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -y >/dev/null 2>&1 || true
-    for pkg in chromium chromium-browser; do
-      if apt-get install -y "$pkg" >/dev/null 2>&1; then
-        echo "Installed $pkg via apt."
-        return 0
-      fi
-    done
-  fi
-  if command -v dnf >/dev/null 2>&1; then
-    dnf install -y chromium >/dev/null 2>&1 && return 0
-  fi
-  if command -v apk >/dev/null 2>&1; then
-    apk add --no-cache chromium >/dev/null 2>&1 && return 0
-  fi
-  return 1
-}
-
-install_system_chromium || true
-
-for path in /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome /usr/bin/google-chrome-stable; do
-  if [ -x "$path" ]; then
-    echo "System Chromium available at $path"
-    exit 0
-  fi
-done
-
-# Some sandboxes ship a pre-populated Playwright cache. Use it if present.
-for path in /opt/pw-browsers/chromium-*/chrome-linux/chrome \
-            /opt/pw-browsers/chromium_headless_shell-*/chrome-linux/headless_shell \
-            /root/.cache/ms-playwright/chromium-*/chrome-linux/chrome \
-            "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux/chrome; do
-  if [ -x "$path" ]; then
-    echo "Playwright-bundled Chromium available at $path"
-    exit 0
-  fi
-done
-
-echo "WARN: no Chromium found yet. track_and_email.py will retry detection at runtime." >&2
+echo "WARN: no Chromium found. track_and_email.py will retry detection at runtime." >&2
 exit 0

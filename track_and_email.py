@@ -127,6 +127,9 @@ def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
     chromium_path = _resolve_chromium_path()
     if chromium_path:
         launch_kwargs["executable_path"] = chromium_path
+        print(f"Using Chromium: {chromium_path}", flush=True)
+    else:
+        print("Using Playwright-managed Chromium", flush=True)
 
     with sync_playwright() as p:
         try:
@@ -134,7 +137,6 @@ def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
         except Exception as exc:
             if "executable_path" in launch_kwargs:
                 raise
-            # Playwright bundled browser missing and no system Chromium found.
             raise RuntimeError(
                 "No Chromium available. Run setup.sh or set "
                 "CHROMIUM_EXECUTABLE_PATH to a chromium/chrome binary. "
@@ -149,21 +151,23 @@ def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
             locale="en-US",
         )
         page = context.new_page()
-        page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        print(f"Loading page (timeout 45s)...", flush=True)
+        page.goto(url, wait_until="domcontentloaded", timeout=45_000)
 
+        # SeaRates keeps polling in the background, so networkidle rarely fires.
+        # Cap the wait aggressively; the scroll loop already gives it time to render.
         try:
-            page.wait_for_load_state("networkidle", timeout=30_000)
+            page.wait_for_load_state("networkidle", timeout=10_000)
         except PlaywrightTimeout:
             pass
 
         _dismiss_overlays(page)
-
-        # Give the tracking widget time to render its data.
-        page.wait_for_timeout(4_000)
+        print("Rendering tracking widget...", flush=True)
+        page.wait_for_timeout(3_000)
 
         for _ in range(3):
             page.mouse.wheel(0, 1200)
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(600)
         page.evaluate("window.scrollTo(0, 0)")
         page.wait_for_timeout(500)
 
@@ -388,37 +392,38 @@ def main() -> int:
         or DEFAULT_SMTP_USER
     )
 
-    print(f"Scraping {url}")
+    print(f"Scraping {url}", flush=True)
     data = scrape_tracking(url, ARTIFACTS_DIR)
-    print(f"Screenshot saved to {data['screenshot']}")
+    print(f"Screenshot saved to {data['screenshot']}", flush=True)
 
     errors: list[str] = []
 
     if os.environ.get("RESEND_API_KEY", DEFAULT_RESEND_API_KEY):
         try:
-            print("Sending via Resend HTTPS", file=sys.stderr)
+            print("Sending via Resend HTTPS", file=sys.stderr, flush=True)
             send_via_resend(data, recipient=recipient, source_url=url)
-            print(f"Email sent to {recipient} via Resend")
+            print(f"Email sent to {recipient} via Resend", flush=True)
             return 0
         except Exception as exc:
             errors.append(f"Resend: {exc}")
-            print(f"Resend send failed: {exc}", file=sys.stderr)
+            print(f"Resend send failed: {exc}", file=sys.stderr, flush=True)
 
     try:
-        print("Falling back to SMTP", file=sys.stderr)
+        print("Falling back to SMTP", file=sys.stderr, flush=True)
         msg = build_email(data, recipient=recipient, sender=sender, source_url=url)
         send_email(msg)
-        print(f"Email sent to {recipient} via SMTP")
+        print(f"Email sent to {recipient} via SMTP", flush=True)
         return 0
     except Exception as exc:
         errors.append(f"SMTP: {exc}")
-        print(f"SMTP send failed: {exc}", file=sys.stderr)
+        print(f"SMTP send failed: {exc}", file=sys.stderr, flush=True)
 
     print(
         "All email paths failed.\n"
         + "\n".join(errors)
         + f"\nArtifacts retained at:\n  {data['screenshot']}\n  {data['html']}",
         file=sys.stderr,
+        flush=True,
     )
     return 1
 
