@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash setup.sh)",
+      "Bash(python3 track_and_email.py)",
+      "Bash(python3 -m pip install:*)",
+      "Bash(python3 -m playwright install:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash setup.sh >/tmp/track-container-setup.log 2>&1 || true"
+          }
+        ]
+      }
+    ]
+  }
+}
