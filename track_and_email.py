@@ -88,7 +88,7 @@ DEFAULT_SMTP_USE_SSL = "1"
 # typically allow outbound HTTPS but block SMTP ports.
 RESEND_API_URL = "https://api.resend.com/emails"
 DEFAULT_RESEND_API_KEY = "re_BvJDcSK2_5brAEpVKx4vboFwzVfACXr7t"
-DEFAULT_RESEND_FROM = "Container Tracking <onboarding@resend.dev>"
+DEFAULT_RESEND_FROM = "Container Tracking <noreply@resend.unikrobotics.com>"
 
 ARTIFACTS_BASE_DIR = Path(os.environ.get("TRACKING_ARTIFACTS_DIR", "/tmp/container-tracking"))
 RUN_TIMESTAMP = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
