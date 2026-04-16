@@ -91,7 +91,7 @@ def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
     screenshot_path = artifacts_dir / "tracking.png"
     html_path = artifacts_dir / "tracking.html"
 
-    launch_kwargs = {"headless": True, "args": ["--no-sandbox"]}
+    launch_kwargs = {"headless": True, "args": ["--no-sandbox", "--ignore-certificate-errors"]}
     chromium_path = _resolve_chromium_path()
     if chromium_path:
         launch_kwargs["executable_path"] = chromium_path
