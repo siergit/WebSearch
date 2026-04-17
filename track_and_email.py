@@ -117,9 +117,7 @@ def _dismiss_overlays(page) -> None:
             continue
 
 
-def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
-    """Open the tracking page, screenshot it, and pull all visible data."""
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
+def _scrape_once(url: str, artifacts_dir: Path) -> dict:
     screenshot_path = artifacts_dir / "tracking.png"
     html_path = artifacts_dir / "tracking.html"
 
@@ -154,8 +152,6 @@ def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
         print(f"Loading page (timeout 45s)...", flush=True)
         page.goto(url, wait_until="domcontentloaded", timeout=45_000)
 
-        # SeaRates keeps polling in the background, so networkidle rarely fires.
-        # Cap the wait aggressively; the scroll loop already gives it time to render.
         try:
             page.wait_for_load_state("networkidle", timeout=10_000)
         except PlaywrightTimeout:
@@ -187,6 +183,32 @@ def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
         "screenshot": screenshot_path,
         "html": html_path,
     }
+
+
+def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
+    """Open the tracking page, screenshot it, and pull all visible data.
+
+    Retries once if the first attempt captured a proxy/edge error page
+    instead of the real tracker (seen in the routine sandbox when the
+    egress proxy returns "DNS cache overflow")."""
+    import time
+
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    last: dict | None = None
+    for attempt in range(1, 4):
+        print(f"Scrape attempt {attempt}/3", flush=True)
+        last = _scrape_once(url, artifacts_dir)
+        if _html_looks_real(last["text"]):
+            return last
+        preview = last["text"][:120].replace("\n", " ")
+        print(
+            f"Scrape attempt {attempt} looks like a proxy error page "
+            f"({preview!r}); retrying after backoff.",
+            flush=True,
+        )
+        time.sleep(5 * attempt)
+    assert last is not None
+    return last
 
 
 def _container_number(url: str) -> str:
@@ -502,15 +524,11 @@ def main() -> int:
     print(f"===RUN_LOG_PATH=== {log_path}", flush=True)
 
     # Connectivity probes so we know at-a-glance whether the sandbox
-    # egress allowlist lets us talk to the hosts we need. Override with
+    # egress allowlist lets us talk to the hosts we need. Keep the list
+    # minimal — the sandbox proxy has a small DNS cache and extra hosts
+    # evict the ones we actually need. Override with
     # TRACKING_PROBE_HOSTS="host1,host2,...".
-    default_hosts = (
-        "api.resend.com",
-        "www.searates.com",
-        "searates.com",
-        "api.searates.com",
-        "api.github.com",  # known-trusted, acts as a control
-    )
+    default_hosts = ("api.resend.com", "www.searates.com")
     env_hosts = os.environ.get("TRACKING_PROBE_HOSTS", "").strip()
     hosts = tuple(h.strip() for h in env_hosts.split(",") if h.strip()) or default_hosts
     _probe_connectivity(hosts)
@@ -520,7 +538,8 @@ def main() -> int:
     print(f"Screenshot saved to {data['screenshot']}", flush=True)
     print(f"HTML saved to {data['html']}", flush=True)
 
-    if not _html_looks_real(data["text"]):
+    scrape_ok = _html_looks_real(data["text"])
+    if not scrape_ok:
         preview = data["text"][:400].replace("\n", " ")
         print(
             f"===SCRAPE_WARNING=== Captured page does not look like the "
@@ -554,15 +573,26 @@ def main() -> int:
             errors.append(f"Resend: {exc}")
             print(f"Resend send failed: {exc}", file=sys.stderr, flush=True)
 
-    try:
-        print("Falling back to SMTP", file=sys.stderr, flush=True)
-        msg = build_email(data, recipient=recipient, sender=sender, source_url=url)
-        send_email(msg)
-        print(f"Email sent to {recipient} via SMTP", flush=True)
-        return 0
-    except Exception as exc:
-        errors.append(f"SMTP: {exc}")
-        print(f"SMTP send failed: {exc}", file=sys.stderr, flush=True)
+    # SMTP ports are blocked in the Claude Code routine sandbox, so SMTP
+    # is opt-in via TRACKING_TRY_SMTP=1. Default is to skip it so we don't
+    # burn ~80 seconds in timeouts per run.
+    if os.environ.get("TRACKING_TRY_SMTP") == "1":
+        try:
+            print("Falling back to SMTP", file=sys.stderr, flush=True)
+            msg = build_email(data, recipient=recipient, sender=sender, source_url=url)
+            send_email(msg)
+            print(f"Email sent to {recipient} via SMTP", flush=True)
+            return 0
+        except Exception as exc:
+            errors.append(f"SMTP: {exc}")
+            print(f"SMTP send failed: {exc}", file=sys.stderr, flush=True)
+    else:
+        print(
+            "SMTP path skipped (set TRACKING_TRY_SMTP=1 to attempt it; "
+            "ports are blocked by the routine sandbox).",
+            file=sys.stderr,
+            flush=True,
+        )
 
     print(
         "All email paths failed.\n"

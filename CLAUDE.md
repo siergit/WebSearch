@@ -59,27 +59,27 @@ a correr o comando.
 
 ## Envio de email
 
-**Primário — Gmail connector (routine Claude):** o sandbox da routine
-tem um egress proxy que devolve `403 Host not in allowlist` para hosts
-não pré-aprovados (bloqueia `api.resend.com`) e faz timeout em portas
-SMTP. Por isso o envio é feito pelo próprio Claude da routine, usando
-o connector Gmail que está anexo à routine.
+**Primário — Resend HTTPS:** com o Environment configurado em Network
+access = **Full** (Claude Code web → Environments → editar WebSearch),
+o `POST https://api.resend.com/emails` passa. O pedido leva um
+User-Agent `Chrome/...` para não apanhar Cloudflare error 1010 ("banned
+by browser signature") e tem retry exponencial (4 tentativas) em
+respostas 502/503/504/520-524 porque o egress proxy do routine devolve
+ocasionalmente `HTTP 503 DNS cache overflow`.
 
-- `.claude/settings.json` define `TRACKING_SKIP_EMAIL=1`, pelo que o
-  Python só faz scraping e grava os artefactos. Imprime em stdout uma
-  linha `===ARTIFACTS_READY=== <dir>` com os paths de `tracking.png` e
-  `tracking.html`, seguidos do recipient.
-- O slash command `/track-container` indica à routine Claude que tem de
-  ler essa linha e chamar o Gmail connector com `to`, `subject`, `body`
-  e as attachments.
+A scraping também faz retry (até 3 tentativas com backoff) se a página
+capturada corresponder ao erro do proxy em vez do tracker real —
+detecção via `_html_looks_real()` em `track_and_email.py`.
 
-**Fallback — Resend / SMTP (desactivado por default):** o script ainda
-tem o caminho Resend (`https://api.resend.com/emails`, sender
-`noreply@resend.unikrobotics.com`) e SMTP (`mail.enginis.net:465` SSL,
-com fallback 587/2525/25). Para reactivar, desligue `TRACKING_SKIP_EMAIL`
-ou passe `TRACKING_SKIP_EMAIL=0`. Só vai funcionar se os hosts
-correspondentes entrarem na allowlist do Environment (Claude Code web
-→ Environments → Network access → Custom).
+**Fallback — SMTP (opt-in):** `mail.enginis.net:465` SSL com fallback
+587/2525/25. Os portos saem sempre em timeout no sandbox, por isso só
+corre se `TRACKING_TRY_SMTP=1`. Fica desligado por default para não
+gastar ~80 s em timeouts.
+
+**Modo Gmail connector (legacy):** se `TRACKING_SKIP_EMAIL=1`, o Python
+salta todo o envio e imprime `===ARTIFACTS_READY=== <dir>`. Deixado
+para quando não há Resend/Full access disponível — o Claude da routine
+entrega via Gmail connector. Actualmente não é o caminho default.
 
 ## Artefactos
 
