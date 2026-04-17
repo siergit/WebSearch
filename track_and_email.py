@@ -77,6 +77,11 @@ DEFAULT_URL = (
     "https://www.searates.com/container/tracking/"
     "?shipment-type=sea&number=COSU6448851830&type=BL&sealine=COSU"
 )
+# COSCO is the carrier for COSU-prefixed containers. Their public tracker
+# returns authoritative data without the SeaRates marketing UI around it.
+DEFAULT_COSCO_URL_TEMPLATE = (
+    "https://elines.coscoshipping.com/ebtracking/public/bill/{number}"
+)
 DEFAULT_RECIPIENT = "miguel.reis@sier.pt"
 
 DEFAULT_SMTP_HOST = "mail.enginis.net"
@@ -150,6 +155,57 @@ def _sanitize_html(html: str) -> str:
     return html
 
 
+# Words that indicate the captured page actually has tracking data
+# (used to tell a real tracker page apart from a marketing landing page
+# or a proxy error page).
+_TRACKING_DATA_TERMS = re.compile(
+    r"port of (loading|discharge)|\bpol\b|\bpod\b|\bvessel\b|\bvoyage\b|"
+    r"bill of lading|container\s*no|estimated (arrival|departure)|"
+    r"\beta\b|\betd\b|actual (arrival|departure)|place of (receipt|delivery)|"
+    r"last location|empty (pickup|return)|gate\s?(in|out)",
+    re.IGNORECASE,
+)
+
+
+def _has_tracking_data(text: str) -> bool:
+    """True if the page looks like it carries real tracking data."""
+    if not text or "dns cache overflow" in text.lower():
+        return False
+    return len(_TRACKING_DATA_TERMS.findall(text)) >= 2
+
+
+# Same pattern as the Python one, but as a plain JS regex so we can pass
+# it into page.wait_for_function (double the backslashes for JS literals).
+_TRACKING_DATA_JS_RE = (
+    r"port of (loading|discharge)|\\bpol\\b|\\bpod\\b|\\bvessel\\b|\\bvoyage\\b|"
+    r"bill of lading|container\\s*no|estimated (arrival|departure)|"
+    r"\\beta\\b|\\betd\\b|actual (arrival|departure)|place of (receipt|delivery)|"
+    r"last location|empty (pickup|return)|gate\\s?(in|out)"
+)
+
+
+def _wait_for_tracking_data(page, label: str, timeout_ms: int = 30_000) -> bool:
+    """Wait until at least two tracking indicators appear in the body text."""
+    try:
+        page.wait_for_function(
+            "() => {"
+            f"  const rx = /{_TRACKING_DATA_JS_RE}/gi;"
+            "  const t = (document.body && document.body.innerText) || '';"
+            "  return (t.match(rx) || []).length >= 2;"
+            "}",
+            timeout=timeout_ms,
+        )
+        print(f"  {label}: tracking data detected", flush=True)
+        return True
+    except PlaywrightTimeout:
+        print(
+            f"  {label}: tracking data did not appear within "
+            f"{timeout_ms/1000:.0f}s",
+            flush=True,
+        )
+        return False
+
+
 def _scrape_once(url: str, artifacts_dir: Path) -> dict:
     screenshot_path = artifacts_dir / "tracking.png"
     html_path = artifacts_dir / "tracking.html"
@@ -193,7 +249,7 @@ def _scrape_once(url: str, artifacts_dir: Path) -> dict:
 
         _dismiss_overlays(page)
         print("Rendering tracking widget...", flush=True)
-        page.wait_for_timeout(3_000)
+        _wait_for_tracking_data(page, "widget", timeout_ms=30_000)
 
         for _ in range(3):
             page.mouse.wheel(0, 1200)
@@ -228,28 +284,65 @@ def _scrape_once(url: str, artifacts_dir: Path) -> dict:
 
 
 def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
-    """Open the tracking page, screenshot it, and pull all visible data.
+    """Scrape a tracking source, preferring COSCO's official tracker and
+    falling back to SeaRates.
 
-    Retries once if the first attempt captured a proxy/edge error page
-    instead of the real tracker (seen in the routine sandbox when the
-    egress proxy returns "DNS cache overflow")."""
+    Retries each source if the captured page is either the proxy's DNS
+    error page or a marketing landing page that never rendered the real
+    tracking widget."""
     import time
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    last: dict | None = None
-    for attempt in range(1, 4):
-        print(f"Scrape attempt {attempt}/3", flush=True)
-        last = _scrape_once(url, artifacts_dir)
-        if _html_looks_real(last["text"]):
-            return last
-        preview = last["text"][:120].replace("\n", " ")
-        print(
-            f"Scrape attempt {attempt} looks like a proxy error page "
-            f"({preview!r}); retrying after backoff.",
-            flush=True,
+    container = _container_number(url)
+
+    sources: list[tuple[str, str]] = []
+    if os.environ.get("TRACKING_SKIP_COSCO") != "1":
+        cosco_url = os.environ.get(
+            "COSCO_URL", DEFAULT_COSCO_URL_TEMPLATE.format(number=container)
         )
-        time.sleep(5 * attempt)
+        sources.append(("cosco", cosco_url))
+    sources.append(("searates", url))
+
+    last: dict | None = None
+    for source, src_url in sources:
+        for attempt in range(1, 3):
+            print(f"Scrape source={source} attempt {attempt}/2 url={src_url}", flush=True)
+            try:
+                last = _scrape_once(src_url, artifacts_dir)
+                last["source"] = source
+                last["source_url"] = src_url
+            except Exception as exc:
+                print(f"  {source} attempt {attempt} raised: {exc}", flush=True)
+                time.sleep(5 * attempt)
+                continue
+
+            if not _html_looks_real(last["text"]):
+                preview = last["text"][:120].replace("\n", " ")
+                print(
+                    f"  {source} attempt {attempt}: proxy error page "
+                    f"({preview!r}); retrying after backoff.",
+                    flush=True,
+                )
+                time.sleep(5 * attempt)
+                continue
+
+            if _has_tracking_data(last["text"]):
+                print(f"  {source}: has tracking data — using this source", flush=True)
+                return last
+
+            preview = last["text"][:200].replace("\n", " ")
+            print(
+                f"  {source} attempt {attempt}: page has no tracking data. "
+                f"Preview: {preview!r}",
+                flush=True,
+            )
+            time.sleep(3)
+
+        print(f"  {source} exhausted; trying next source", flush=True)
+
     assert last is not None
+    last.setdefault("source", "unknown")
+    last.setdefault("source_url", url)
     return last
 
 
@@ -258,15 +351,26 @@ def _container_number(url: str) -> str:
     return (qs.get("number") or ["unknown"])[0]
 
 
+_SOURCE_LABELS = {
+    "cosco": "COSCO eLines (official)",
+    "searates": "SeaRates (aggregator)",
+    "unknown": "unknown",
+}
+
+
 def _email_parts(data: dict, source_url: str) -> dict:
     """Shared subject/text/html/attachments used by both SMTP and Resend paths."""
     container = _container_number(source_url)
     captured_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    source_key = data.get("source", "unknown")
+    source_label = _SOURCE_LABELS.get(source_key, source_key)
+    actual_source_url = data.get("source_url") or source_url
 
     plain = (
         f"Container tracking snapshot\n"
         f"Container: {container}\n"
-        f"Source:    {source_url}\n"
+        f"Source:    {source_label}\n"
+        f"URL:       {actual_source_url}\n"
         f"Captured:  {captured_at}\n"
         f"Page title: {data['title']}\n"
         f"\n"
@@ -280,7 +384,8 @@ def _email_parts(data: dict, source_url: str) -> dict:
     <h2>Container tracking snapshot</h2>
     <ul>
       <li><strong>Container:</strong> {container}</li>
-      <li><strong>Source:</strong> <a href="{source_url}">{source_url}</a></li>
+      <li><strong>Source:</strong> {source_label}</li>
+      <li><strong>URL:</strong> <a href="{actual_source_url}">{actual_source_url}</a></li>
       <li><strong>Captured:</strong> {captured_at}</li>
       <li><strong>Page title:</strong> {data['title']}</li>
     </ul>
@@ -295,7 +400,9 @@ def _email_parts(data: dict, source_url: str) -> dict:
 
     metadata = {
         "container": container,
-        "source_url": source_url,
+        "source": source_key,
+        "source_label": source_label,
+        "source_url": actual_source_url,
         "captured_at": captured_at,
         "page_title": data["title"],
     }
@@ -312,7 +419,7 @@ def _email_parts(data: dict, source_url: str) -> dict:
     })
 
     return {
-        "subject": f"Container tracking {container} - {captured_at}",
+        "subject": f"Container tracking {container} via {source_label} - {captured_at}",
         "text": plain,
         "html": html,
         "attachments": attachments,
@@ -523,12 +630,20 @@ def _probe_connectivity(hosts: tuple[str, ...]) -> None:
 
 
 def _html_looks_real(html: str) -> bool:
-    """Heuristic: true if the HTML looks like the SeaRates tracker and
-    not a proxy error page."""
+    """Heuristic: true if the captured page looks like a real site
+    response rather than a proxy/edge error page produced by the routine
+    sandbox. Doesn't require carrier-specific keywords — source
+    selection is handled by _has_tracking_data upstream."""
+    if not html:
+        return False
     lowered = html.lower()
     if "host not in allowlist" in lowered:
         return False
-    return "searates" in lowered or "tracking" in lowered
+    if "dns cache overflow" in lowered:
+        return False
+    # Real pages render meaningful content; the proxy error pages are
+    # tiny single-line strings.
+    return len(html.strip()) > 200
 
 
 class _Tee:
@@ -579,13 +694,21 @@ def main() -> int:
     data = scrape_tracking(url, ARTIFACTS_DIR)
     print(f"Screenshot saved to {data['screenshot']}", flush=True)
     print(f"HTML saved to {data['html']}", flush=True)
+    print(f"Winning source: {data.get('source', 'unknown')} ({data.get('source_url')})", flush=True)
 
-    scrape_ok = _html_looks_real(data["text"])
-    if not scrape_ok:
+    if not _html_looks_real(data["text"]):
         preview = data["text"][:400].replace("\n", " ")
         print(
-            f"===SCRAPE_WARNING=== Captured page does not look like the "
-            f"SeaRates tracker. Preview: {preview!r}",
+            f"===SCRAPE_WARNING=== Captured page looks like a proxy/error "
+            f"page. Preview: {preview!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif not _has_tracking_data(data["text"]):
+        preview = data["text"][:400].replace("\n", " ")
+        print(
+            f"===SCRAPE_WARNING=== Page loaded but no tracking data "
+            f"detected (checked COSCO + SeaRates). Preview: {preview!r}",
             file=sys.stderr,
             flush=True,
         )

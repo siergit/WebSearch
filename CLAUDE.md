@@ -24,7 +24,13 @@ e a confirmação do envio.
 
 ## Configuração fixa
 
-- URL alvo (default): <https://www.searates.com/container/tracking/?shipment-type=sea&number=COSU6448851830&type=BL&sealine=COSU>
+- Fonte primária (default): COSCO eLines —
+  `https://elines.coscoshipping.com/ebtracking/public/bill/COSU6448851830`.
+  É a autoridade para containers COSU (COSCO). Sem UI de marketing em
+  volta dos dados.
+- Fonte fallback (default): SeaRates —
+  `https://www.searates.com/container/tracking/?shipment-type=sea&number=COSU6448851830&type=BL&sealine=COSU`.
+  Usada se a COSCO falhar ou não devolver dados de tracking.
 - Destinatário (default): `miguel.reis@sier.pt`
 - SMTP (default, já embutido no script):
   - host: `mail.enginis.net`
@@ -32,9 +38,15 @@ e a confirmação do envio.
   - user: `noreply@enginis.net`
   - password: `vvs-mSp88eosg1m(`
 
-Os valores podem ser sobrepostos via env vars: `TRACKING_URL`,
+Os valores podem ser sobrepostos via env vars: `TRACKING_URL` (SeaRates),
+`COSCO_URL` (COSCO), `TRACKING_SKIP_COSCO=1` (salta a COSCO),
 `TRACKING_RECIPIENT`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
 `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_USE_SSL`.
+
+O script só aceita uma captura como válida se a página contiver pelo
+menos dois indicadores de dados reais (`Port of Loading`, `Vessel`,
+`ETA`, `POL`, `POD`, `Bill of Lading`, etc.) via
+`_has_tracking_data()`. Senão tenta a próxima fonte.
 
 ## Estrutura
 
