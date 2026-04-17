@@ -322,9 +322,20 @@ def send_via_resend(data: dict, recipient: str, source_url: str) -> None:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-            print(f"Resend response {resp.status}: {body}", file=sys.stderr)
+            print(
+                f"===RESEND_RESPONSE_BEGIN===\nHTTP {resp.status}\n{body}\n"
+                f"===RESEND_RESPONSE_END===",
+                file=sys.stderr,
+                flush=True,
+            )
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
+        print(
+            f"===RESEND_RESPONSE_BEGIN===\nHTTP {exc.code}\n{detail}\n"
+            f"===RESEND_RESPONSE_END===",
+            file=sys.stderr,
+            flush=True,
+        )
         raise RuntimeError(f"Resend HTTP {exc.code}: {detail}") from exc
 
 
@@ -389,6 +400,23 @@ def send_email(msg: EmailMessage) -> None:
     )
 
 
+class _Tee:
+    """Duplicate writes to the original stream and a log file."""
+    def __init__(self, original, log_file):
+        self._original = original
+        self._log = log_file
+    def write(self, text):
+        self._original.write(text)
+        self._log.write(text)
+        self._original.flush()
+        self._log.flush()
+    def flush(self):
+        self._original.flush()
+        self._log.flush()
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
 def main() -> int:
     url = os.environ.get("TRACKING_URL", DEFAULT_URL)
     recipient = os.environ.get("TRACKING_RECIPIENT", DEFAULT_RECIPIENT)
@@ -398,6 +426,13 @@ def main() -> int:
         or DEFAULT_SMTP_USER
     )
 
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = ARTIFACTS_DIR / "run.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+
+    print(f"===RUN_LOG_PATH=== {log_path}", flush=True)
     print(f"Scraping {url}", flush=True)
     data = scrape_tracking(url, ARTIFACTS_DIR)
     print(f"Screenshot saved to {data['screenshot']}", flush=True)
