@@ -462,8 +462,18 @@ def main() -> int:
     print(f"===RUN_LOG_PATH=== {log_path}", flush=True)
 
     # Connectivity probes so we know at-a-glance whether the sandbox
-    # egress allowlist lets us talk to the hosts we need.
-    _probe_connectivity(("api.resend.com", "www.searates.com"))
+    # egress allowlist lets us talk to the hosts we need. Override with
+    # TRACKING_PROBE_HOSTS="host1,host2,...".
+    default_hosts = (
+        "api.resend.com",
+        "www.searates.com",
+        "searates.com",
+        "api.searates.com",
+        "api.github.com",  # known-trusted, acts as a control
+    )
+    env_hosts = os.environ.get("TRACKING_PROBE_HOSTS", "").strip()
+    hosts = tuple(h.strip() for h in env_hosts.split(",") if h.strip()) or default_hosts
+    _probe_connectivity(hosts)
 
     print(f"Scraping {url}", flush=True)
     data = scrape_tracking(url, ARTIFACTS_DIR)
