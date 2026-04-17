@@ -310,40 +310,69 @@ def send_via_resend(data: dict, recipient: str, source_url: str) -> None:
         ],
     }
 
-    req = urllib.request.Request(
-        RESEND_API_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            # Cloudflare in front of api.resend.com rejects the default
-            # "Python-urllib/X" UA with error 1010. Use a browser-like UA.
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-            ),
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
+    body_bytes = json.dumps(payload).encode("utf-8")
+    print(f"Resend payload size: {len(body_bytes)} bytes", file=sys.stderr, flush=True)
+
+    # Retry transient 5xx / network blips from the edge (seen: HTTP 503
+    # "DNS cache overflow" from Cloudflare in front of Resend). Linear
+    # backoff is fine; we only keep up to 4 attempts total so the routine
+    # doesn't stall.
+    import time
+
+    last_exc: Exception | None = None
+    for attempt in range(1, 5):
+        req = urllib.request.Request(
+            RESEND_API_URL,
+            data=body_bytes,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                # Cloudflare in front of api.resend.com rejects the default
+                # "Python-urllib/X" UA with error 1010. Use a browser-like UA.
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                ),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+                print(
+                    f"===RESEND_RESPONSE_BEGIN===\nHTTP {resp.status}\n{body}\n"
+                    f"===RESEND_RESPONSE_END===",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
             print(
-                f"===RESEND_RESPONSE_BEGIN===\nHTTP {resp.status}\n{body}\n"
-                f"===RESEND_RESPONSE_END===",
+                f"===RESEND_RESPONSE_BEGIN===\nHTTP {exc.code} (attempt {attempt}/4)\n"
+                f"{detail}\n===RESEND_RESPONSE_END===",
                 file=sys.stderr,
                 flush=True,
             )
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        print(
-            f"===RESEND_RESPONSE_BEGIN===\nHTTP {exc.code}\n{detail}\n"
-            f"===RESEND_RESPONSE_END===",
-            file=sys.stderr,
-            flush=True,
-        )
-        raise RuntimeError(f"Resend HTTP {exc.code}: {detail}") from exc
+            last_exc = RuntimeError(f"Resend HTTP {exc.code}: {detail}")
+            # Only retry transient edge failures.
+            if exc.code in (502, 503, 504, 520, 521, 522, 523, 524):
+                time.sleep(2 * attempt)
+                continue
+            raise last_exc from exc
+        except Exception as exc:
+            print(
+                f"===RESEND_RESPONSE_BEGIN===\n{exc.__class__.__name__} "
+                f"(attempt {attempt}/4): {exc}\n===RESEND_RESPONSE_END===",
+                file=sys.stderr,
+                flush=True,
+            )
+            last_exc = exc
+            time.sleep(2 * attempt)
+            continue
+
+    raise last_exc or RuntimeError("Resend failed for unknown reason")
 
 
 def _smtp_attempts() -> list[tuple[int, bool]]:
