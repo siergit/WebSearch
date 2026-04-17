@@ -436,6 +436,20 @@ def main() -> int:
     print(f"Scraping {url}", flush=True)
     data = scrape_tracking(url, ARTIFACTS_DIR)
     print(f"Screenshot saved to {data['screenshot']}", flush=True)
+    print(f"HTML saved to {data['html']}", flush=True)
+
+    skip_email = os.environ.get("TRACKING_SKIP_EMAIL") == "1"
+    if skip_email:
+        print(
+            "TRACKING_SKIP_EMAIL=1 set — skipping Python-side email. "
+            "Caller is expected to deliver via Gmail connector or similar.",
+            flush=True,
+        )
+        print(f"===ARTIFACTS_READY=== {ARTIFACTS_DIR}", flush=True)
+        print(f"  screenshot: {data['screenshot']}", flush=True)
+        print(f"  html:       {data['html']}", flush=True)
+        print(f"  recipient:  {recipient}", flush=True)
+        return 0
 
     errors: list[str] = []
 

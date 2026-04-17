@@ -59,19 +59,27 @@ a correr o comando.
 
 ## Envio de email
 
-Ordem de tentativas:
+**Primário — Gmail connector (routine Claude):** o sandbox da routine
+tem um egress proxy que devolve `403 Host not in allowlist` para hosts
+não pré-aprovados (bloqueia `api.resend.com`) e faz timeout em portas
+SMTP. Por isso o envio é feito pelo próprio Claude da routine, usando
+o connector Gmail que está anexo à routine.
 
-1. **Resend** (HTTPS POST para `https://api.resend.com/emails`) — usado
-   primeiro porque o sandbox da routine normalmente permite HTTPS mas
-   bloqueia portas SMTP. API key default embutida; sobreponível com
-   `RESEND_API_KEY`. Sender default `noreply@resend.unikrobotics.com`
-   (domínio verificado na conta Resend), sobreponível com `RESEND_FROM`.
-2. **SMTP** (`mail.enginis.net:465` SSL por default) como fallback. Se
-   falhar, tenta `465/SSL`, `587/STARTTLS`, `2525`, `25` em sequência
-   com timeout de 20s cada.
+- `.claude/settings.json` define `TRACKING_SKIP_EMAIL=1`, pelo que o
+  Python só faz scraping e grava os artefactos. Imprime em stdout uma
+  linha `===ARTIFACTS_READY=== <dir>` com os paths de `tracking.png` e
+  `tracking.html`, seguidos do recipient.
+- O slash command `/track-container` indica à routine Claude que tem de
+  ler essa linha e chamar o Gmail connector com `to`, `subject`, `body`
+  e as attachments.
 
-Se TODOS os caminhos falharem, o script sai com código 1 mas mantém os
-artefactos. Reporte os caminhos ao utilizador.
+**Fallback — Resend / SMTP (desactivado por default):** o script ainda
+tem o caminho Resend (`https://api.resend.com/emails`, sender
+`noreply@resend.unikrobotics.com`) e SMTP (`mail.enginis.net:465` SSL,
+com fallback 587/2525/25). Para reactivar, desligue `TRACKING_SKIP_EMAIL`
+ou passe `TRACKING_SKIP_EMAIL=0`. Só vai funcionar se os hosts
+correspondentes entrarem na allowlist do Environment (Claude Code web
+→ Environments → Network access → Custom).
 
 ## Artefactos
 

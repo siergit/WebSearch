@@ -3,9 +3,14 @@
     "allow": [
       "Bash(bash setup.sh)",
       "Bash(python3 track_and_email.py)",
+      "Bash(cat /tmp/container-tracking/*/run.log)",
+      "Bash(ls /tmp/container-tracking/*)",
       "Bash(python3 -m pip install:*)",
       "Bash(python3 -m playwright install:*)"
     ]
+  },
+  "env": {
+    "TRACKING_SKIP_EMAIL": "1"
   },
   "hooks": {
     "SessionStart": [
