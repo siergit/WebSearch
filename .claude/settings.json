@@ -10,7 +10,7 @@
     ]
   },
   "env": {
-    "TRACKING_SKIP_EMAIL": "1"
+    "TRACKING_SKIP_EMAIL": "0"
   },
   "hooks": {
     "SessionStart": [

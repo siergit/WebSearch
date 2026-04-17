@@ -400,6 +400,33 @@ def send_email(msg: EmailMessage) -> None:
     )
 
 
+def _probe_connectivity(hosts: tuple[str, ...]) -> None:
+    """HEAD request each host and log the outcome. Doesn't fail the run —
+    just writes the verdict so the routine log shows whether egress is open."""
+    print("===CONNECTIVITY_PROBE===", flush=True)
+    for host in hosts:
+        url = f"https://{host}/"
+        req = urllib.request.Request(url, method="HEAD")
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                print(f"  {host}: OK ({resp.status})", flush=True)
+        except urllib.error.HTTPError as exc:
+            body = exc.read(200).decode("utf-8", errors="replace")
+            print(f"  {host}: HTTP {exc.code} {body!r}", flush=True)
+        except Exception as exc:
+            print(f"  {host}: {exc.__class__.__name__}: {exc}", flush=True)
+    print("===CONNECTIVITY_PROBE_END===", flush=True)
+
+
+def _html_looks_real(html: str) -> bool:
+    """Heuristic: true if the HTML looks like the SeaRates tracker and
+    not a proxy error page."""
+    lowered = html.lower()
+    if "host not in allowlist" in lowered:
+        return False
+    return "searates" in lowered or "tracking" in lowered
+
+
 class _Tee:
     """Duplicate writes to the original stream and a log file."""
     def __init__(self, original, log_file):
@@ -433,10 +460,24 @@ def main() -> int:
     sys.stderr = _Tee(sys.stderr, log_file)
 
     print(f"===RUN_LOG_PATH=== {log_path}", flush=True)
+
+    # Connectivity probes so we know at-a-glance whether the sandbox
+    # egress allowlist lets us talk to the hosts we need.
+    _probe_connectivity(("api.resend.com", "www.searates.com"))
+
     print(f"Scraping {url}", flush=True)
     data = scrape_tracking(url, ARTIFACTS_DIR)
     print(f"Screenshot saved to {data['screenshot']}", flush=True)
     print(f"HTML saved to {data['html']}", flush=True)
+
+    if not _html_looks_real(data["text"]):
+        preview = data["text"][:400].replace("\n", " ")
+        print(
+            f"===SCRAPE_WARNING=== Captured page does not look like the "
+            f"SeaRates tracker. Preview: {preview!r}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     skip_email = os.environ.get("TRACKING_SKIP_EMAIL") == "1"
     if skip_email:
