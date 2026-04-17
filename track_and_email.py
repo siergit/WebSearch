@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import smtplib
 import ssl
 import sys
@@ -117,9 +118,42 @@ def _dismiss_overlays(page) -> None:
             continue
 
 
+_ACTIVE_TAGS = ("script", "iframe", "noscript", "object", "embed", "applet")
+
+
+def _sanitize_html(html: str) -> str:
+    """Strip scripts/iframes/event handlers so the saved HTML is safe to
+    attach to an email. Antivirus products (e.g. ESET) flag the raw
+    SeaRates HTML because of obfuscated/minified JS in <script> blocks —
+    heuristic catch as JS/Kryptik. The sanitized copy keeps markup and
+    styling but removes executable content."""
+    for tag in _ACTIVE_TAGS:
+        html = re.sub(
+            rf"<{tag}\b[^>]*>.*?</{tag}\s*>",
+            "",
+            html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        html = re.sub(rf"<{tag}\b[^>]*/?>", "", html, flags=re.IGNORECASE)
+    html = re.sub(
+        r"\s+on\w+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)",
+        "",
+        html,
+        flags=re.IGNORECASE,
+    )
+    html = re.sub(
+        r"(href|src|action)\s*=\s*(\"\s*javascript:[^\"]*\"|'\s*javascript:[^']*'|javascript:[^\s>]+)",
+        r'\1="#"',
+        html,
+        flags=re.IGNORECASE,
+    )
+    return html
+
+
 def _scrape_once(url: str, artifacts_dir: Path) -> dict:
     screenshot_path = artifacts_dir / "tracking.png"
     html_path = artifacts_dir / "tracking.html"
+    raw_html_path = artifacts_dir / "tracking-raw.html"
 
     launch_kwargs = {"headless": True, "args": ["--no-sandbox", "--ignore-certificate-errors"]}
     chromium_path = _resolve_chromium_path()
@@ -168,7 +202,15 @@ def _scrape_once(url: str, artifacts_dir: Path) -> dict:
         page.wait_for_timeout(500)
 
         page.screenshot(path=str(screenshot_path), full_page=True)
-        html_path.write_text(page.content(), encoding="utf-8")
+        raw_html = page.content()
+        raw_html_path.write_text(raw_html, encoding="utf-8")
+        sanitized = _sanitize_html(raw_html)
+        html_path.write_text(sanitized, encoding="utf-8")
+        print(
+            f"HTML sanitized: raw={len(raw_html)} bytes, "
+            f"sanitized={len(sanitized)} bytes",
+            flush=True,
+        )
 
         body_text = page.inner_text("body")
         title = page.title()
