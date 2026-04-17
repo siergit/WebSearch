@@ -87,7 +87,7 @@ DEFAULT_SMTP_USE_SSL = "1"
 # Resend is used first because sandbox environments for the remote routine
 # typically allow outbound HTTPS but block SMTP ports.
 RESEND_API_URL = "https://api.resend.com/emails"
-DEFAULT_RESEND_API_KEY = "re_BvJDcSK2_5brAEpVKx4vboFwzVfACXr7t"
+DEFAULT_RESEND_API_KEY = "re_dmJ8MoeU_BpE9sC8Xn8CJMCJ5BQzaGn1t"
 DEFAULT_RESEND_FROM = "Container Tracking <noreply@resend.unikrobotics.com>"
 
 ARTIFACTS_BASE_DIR = Path(os.environ.get("TRACKING_ARTIFACTS_DIR", "/tmp/container-tracking"))
