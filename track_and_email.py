@@ -287,6 +287,12 @@ def send_via_resend(data: dict, recipient: str, source_url: str) -> None:
     if not api_key:
         raise RuntimeError("RESEND_API_KEY not set")
     sender = os.environ.get("RESEND_FROM", DEFAULT_RESEND_FROM)
+    print(
+        f"Resend sender={sender!r}  to={recipient!r}  "
+        f"api_key_prefix={api_key[:10]}...",
+        file=sys.stderr,
+        flush=True,
+    )
 
     parts = _email_parts(data, source_url)
     payload = {
