@@ -77,10 +77,11 @@ DEFAULT_URL = (
     "https://www.searates.com/container/tracking/"
     "?shipment-type=sea&number=COSU6448851830&type=BL&sealine=COSU"
 )
-# COSCO is the carrier for COSU-prefixed containers. Their public tracker
-# returns authoritative data without the SeaRates marketing UI around it.
+# COSCO is the carrier for COSU-prefixed containers. The container
+# endpoint returns the real tracker UI for a container number; the bill
+# endpoint is for Bill of Lading IDs (different ID format).
 DEFAULT_COSCO_URL_TEMPLATE = (
-    "https://elines.coscoshipping.com/ebtracking/public/bill/{number}"
+    "https://elines.coscoshipping.com/ebtracking/public/container/{number}"
 )
 DEFAULT_RECIPIENT = "miguel.reis@sier.pt"
 
@@ -155,58 +156,81 @@ def _sanitize_html(html: str) -> str:
     return html
 
 
-# Words that indicate the captured page actually has tracking data
-# (used to tell a real tracker page apart from a marketing landing page
-# or a proxy error page).
+# Tracking-specific vocabulary. Avoid weak terms that also appear in
+# marketing copy ("bill of lading", "freight tracking") — those trigger
+# false positives on the SeaRates landing page FAQ. We restrict to
+# abbreviations and labels that only appear next to real data.
 _TRACKING_DATA_TERMS = re.compile(
-    r"port of (loading|discharge)|\bpol\b|\bpod\b|\bvessel\b|\bvoyage\b|"
-    r"bill of lading|container\s*no|estimated (arrival|departure)|"
-    r"\beta\b|\betd\b|actual (arrival|departure)|place of (receipt|delivery)|"
+    r"\bPOL\b|\bPOD\b|\bETA\b|\bETD\b|"
+    r"port of (loading|discharge)|place of (receipt|delivery)|"
+    r"vessel\s*(name|voyage)?\b|voyage\s*(no|number)|"
+    r"container\s*(no|number)|bill\s*of\s*lading\s*(no|number)|"
+    r"estimated (arrival|departure)|actual (arrival|departure)|"
     r"last location|empty (pickup|return)|gate\s?(in|out)",
     re.IGNORECASE,
 )
 
-
-def _has_tracking_data(text: str) -> bool:
-    """True if the page looks like it carries real tracking data."""
-    if not text or "dns cache overflow" in text.lower():
-        return False
-    return len(_TRACKING_DATA_TERMS.findall(text)) >= 2
-
-
-# Same pattern as the Python one, but as a plain JS regex so we can pass
-# it into page.wait_for_function (double the backslashes for JS literals).
-_TRACKING_DATA_JS_RE = (
-    r"port of (loading|discharge)|\\bpol\\b|\\bpod\\b|\\bvessel\\b|\\bvoyage\\b|"
-    r"bill of lading|container\\s*no|estimated (arrival|departure)|"
-    r"\\beta\\b|\\betd\\b|actual (arrival|departure)|place of (receipt|delivery)|"
-    r"last location|empty (pickup|return)|gate\\s?(in|out)"
+_DATE_PATTERN = re.compile(
+    r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b|"
+    r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b|"
+    r"\b\d{1,2}\s+"
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{2,4}\b",
+    re.IGNORECASE,
 )
 
 
-def _wait_for_tracking_data(page, label: str, timeout_ms: int = 30_000) -> bool:
-    """Wait until at least two tracking indicators appear in the body text."""
+def _has_tracking_data(text: str, container: str = "") -> bool:
+    """Accept a capture only if it has the container number AND at least
+    one date-like token AND at least one tracking-specific keyword. This
+    discriminates between a rendered tracker widget and a marketing page
+    whose FAQ happens to mention tracking vocabulary."""
+    if not text:
+        return False
+    lowered = text.lower()
+    if "dns cache overflow" in lowered:
+        return False
+    # COSCO returns {"message":"无数据"} ("no data") for unknown IDs.
+    if "无数据" in text or '"message":"no data"' in lowered:
+        return False
+    if container and container.upper() not in text.upper():
+        return False
+    if not _DATE_PATTERN.search(text):
+        return False
+    return bool(_TRACKING_DATA_TERMS.search(text))
+
+
+def _wait_for_tracking_data(
+    page, label: str, container: str, timeout_ms: int = 45_000
+) -> bool:
+    """Wait until the tracker widget renders real data: the container
+    number appears in the body AND at least one date."""
+    container_js = json.dumps(container)
     try:
         page.wait_for_function(
-            "() => {"
-            f"  const rx = /{_TRACKING_DATA_JS_RE}/gi;"
+            "(needle) => {"
             "  const t = (document.body && document.body.innerText) || '';"
-            "  return (t.match(rx) || []).length >= 2;"
+            "  if (!needle || !t.toUpperCase().includes(needle.toUpperCase())) return false;"
+            "  const date = /\\b\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}\\b|"
+            "\\b\\d{1,2}[-/]\\d{1,2}[-/]\\d{2,4}\\b|"
+            "\\b\\d{1,2}\\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+            "\\s+\\d{2,4}\\b/i;"
+            "  return date.test(t);"
             "}",
+            arg=container,
             timeout=timeout_ms,
         )
-        print(f"  {label}: tracking data detected", flush=True)
+        print(f"  {label}: tracker populated with {container} + date", flush=True)
         return True
     except PlaywrightTimeout:
         print(
-            f"  {label}: tracking data did not appear within "
-            f"{timeout_ms/1000:.0f}s",
+            f"  {label}: tracker did not populate within "
+            f"{timeout_ms/1000:.0f}s (container={container})",
             flush=True,
         )
         return False
 
 
-def _scrape_once(url: str, artifacts_dir: Path) -> dict:
+def _scrape_once(url: str, artifacts_dir: Path, container: str = "") -> dict:
     screenshot_path = artifacts_dir / "tracking.png"
     html_path = artifacts_dir / "tracking.html"
     raw_html_path = artifacts_dir / "tracking-raw.html"
@@ -249,13 +273,26 @@ def _scrape_once(url: str, artifacts_dir: Path) -> dict:
 
         _dismiss_overlays(page)
         print("Rendering tracking widget...", flush=True)
-        _wait_for_tracking_data(page, "widget", timeout_ms=30_000)
+        populated = _wait_for_tracking_data(
+            page, "widget", container=container, timeout_ms=45_000
+        )
 
         for _ in range(3):
             page.mouse.wheel(0, 1200)
             page.wait_for_timeout(600)
         page.evaluate("window.scrollTo(0, 0)")
         page.wait_for_timeout(500)
+
+        # If the widget populated, try to scroll it into view so the
+        # full-page screenshot is anchored to the data rather than the
+        # hero banner.
+        if populated and container:
+            try:
+                target = page.get_by_text(container, exact=False).first
+                target.scroll_into_view_if_needed(timeout=3000)
+                page.wait_for_timeout(500)
+            except Exception:
+                pass
 
         page.screenshot(path=str(screenshot_path), full_page=True)
         raw_html = page.content()
@@ -308,7 +345,7 @@ def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
         for attempt in range(1, 3):
             print(f"Scrape source={source} attempt {attempt}/2 url={src_url}", flush=True)
             try:
-                last = _scrape_once(src_url, artifacts_dir)
+                last = _scrape_once(src_url, artifacts_dir, container=container)
                 last["source"] = source
                 last["source_url"] = src_url
             except Exception as exc:
@@ -326,7 +363,7 @@ def scrape_tracking(url: str, artifacts_dir: Path) -> dict:
                 time.sleep(5 * attempt)
                 continue
 
-            if _has_tracking_data(last["text"]):
+            if _has_tracking_data(last["text"], container=container):
                 print(f"  {source}: has tracking data — using this source", flush=True)
                 return last
 
@@ -732,7 +769,7 @@ def main() -> int:
             file=sys.stderr,
             flush=True,
         )
-    elif not _has_tracking_data(data["text"]):
+    elif not _has_tracking_data(data["text"], container=_container_number(url)):
         preview = data["text"][:400].replace("\n", " ")
         print(
             f"===SCRAPE_WARNING=== Page loaded but no tracking data "
