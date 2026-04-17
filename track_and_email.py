@@ -316,6 +316,13 @@ def send_via_resend(data: dict, recipient: str, source_url: str) -> None:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Cloudflare in front of api.resend.com rejects the default
+            # "Python-urllib/X" UA with error 1010. Use a browser-like UA.
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ),
         },
         method="POST",
     )
@@ -404,9 +411,13 @@ def _probe_connectivity(hosts: tuple[str, ...]) -> None:
     """HEAD request each host and log the outcome. Doesn't fail the run —
     just writes the verdict so the routine log shows whether egress is open."""
     print("===CONNECTIVITY_PROBE===", flush=True)
+    ua = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
     for host in hosts:
         url = f"https://{host}/"
-        req = urllib.request.Request(url, method="HEAD")
+        req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": ua})
         try:
             with urllib.request.urlopen(req, timeout=8) as resp:
                 print(f"  {host}: OK ({resp.status})", flush=True)
