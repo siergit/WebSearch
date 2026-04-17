@@ -484,14 +484,48 @@ def send_via_resend(data: dict, recipient: str, source_url: str) -> None:
     body_bytes = json.dumps(payload).encode("utf-8")
     print(f"Resend payload size: {len(body_bytes)} bytes", file=sys.stderr, flush=True)
 
-    # Retry transient 5xx / network blips from the edge (seen: HTTP 503
-    # "DNS cache overflow" from Cloudflare in front of Resend). Linear
-    # backoff is fine; we only keep up to 4 attempts total so the routine
-    # doesn't stall.
     import time
 
+    browser_ua = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
+
+    def _warm_up() -> bool:
+        """Cheap HEAD to prime the sandbox proxy's DNS cache for
+        api.resend.com. Returns True if we got any non-5xx response."""
+        req = urllib.request.Request(
+            RESEND_API_URL,
+            method="HEAD",
+            headers={"User-Agent": browser_ua},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                print(f"  Resend warm-up HEAD: {resp.status}", file=sys.stderr, flush=True)
+                return True
+        except urllib.error.HTTPError as exc:
+            body = exc.read(200).decode("utf-8", errors="replace")
+            print(f"  Resend warm-up HEAD: HTTP {exc.code} {body!r}",
+                  file=sys.stderr, flush=True)
+            return exc.code < 500
+        except Exception as exc:
+            print(f"  Resend warm-up HEAD failed: {exc}", file=sys.stderr, flush=True)
+            return False
+
+    # The sandbox proxy returns HTTP 503 "DNS cache overflow" intermittently
+    # for every host (including the Playwright browser's own traffic). We
+    # retry with a longer backoff than usual so the cache has time to free
+    # entries, and do a cheap HEAD first to prime it.
+    backoffs = (10, 30, 60)  # seconds between attempts 1->2, 2->3, 3->4
     last_exc: Exception | None = None
     for attempt in range(1, 5):
+        if attempt > 1:
+            wait = backoffs[min(attempt - 2, len(backoffs) - 1)]
+            print(f"  waiting {wait}s before Resend retry {attempt}",
+                  file=sys.stderr, flush=True)
+            time.sleep(wait)
+            _warm_up()
+
         req = urllib.request.Request(
             RESEND_API_URL,
             data=body_bytes,
@@ -501,15 +535,12 @@ def send_via_resend(data: dict, recipient: str, source_url: str) -> None:
                 "Accept": "application/json",
                 # Cloudflare in front of api.resend.com rejects the default
                 # "Python-urllib/X" UA with error 1010. Use a browser-like UA.
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-                ),
+                "User-Agent": browser_ua,
             },
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
                 print(
                     f"===RESEND_RESPONSE_BEGIN===\nHTTP {resp.status}\n{body}\n"
@@ -527,9 +558,7 @@ def send_via_resend(data: dict, recipient: str, source_url: str) -> None:
                 flush=True,
             )
             last_exc = RuntimeError(f"Resend HTTP {exc.code}: {detail}")
-            # Only retry transient edge failures.
             if exc.code in (502, 503, 504, 520, 521, 522, 523, 524):
-                time.sleep(2 * attempt)
                 continue
             raise last_exc from exc
         except Exception as exc:
@@ -540,7 +569,6 @@ def send_via_resend(data: dict, recipient: str, source_url: str) -> None:
                 flush=True,
             )
             last_exc = exc
-            time.sleep(2 * attempt)
             continue
 
     raise last_exc or RuntimeError("Resend failed for unknown reason")
